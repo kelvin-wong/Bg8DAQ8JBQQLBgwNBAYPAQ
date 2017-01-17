@@ -3,55 +3,57 @@
 const config = require('./config');
 const fivebeans = require('fivebeans');
 const co = require('co');
-const Promise = require('bluebird');
+const bluebird = require('bluebird');
 
-const request = Promise.promisify(require('request'));
+const request = bluebird.promisify(require('request'));
 const MongoClient = require('mongodb').MongoClient;
 
 let client = new fivebeans.client(config.bs.host, config.bs.port);
 let success_count = 0;
 let fail_count = 0;
+let payload_data;
 
 
-function doJob() {
+function doJob(callback) {
 	client.reserve(function (err, job_id, payload) {
 		console.log('Reserve job ' + job_id);
 		if (err) {
 			console.log('Reserve job ' + job_id + ' error:');
 			console.log(err);
 		} else {
-			getExchangeRate(job_id, payload.toString());
+			payload_data = JSON.parse(payload.toString());
+			callback(job_id);
 		}
 	});
 }
 
-function nextJob(job_id, payload) {
+function nextJob(job_id, callback) {
 	success_count++;
-	client.destroy(job_id, config.bs.priority, function (err) {
-		if (err) {
-			console.log('Destroy job' + job_id + ' error:');
-			console.log(err);
-		} else if (success_count < 10) {
-			client.put(config.job.priority, config.job.delay, config.job.ttr, JSON.stringify(payload), function (e, j_id) {
-				doJob();
-			});
-		} else {
-			console.log('All done!');
-			client.end();
-		}
+	client.destroy(job_id, config.bs.priority, callback);
+}
+
+function checkSuccess() {
+	if (success_count < 10) {
+		createJob(config.job.priority, config.job.delay, config.job.ttr, JSON.stringify(payload_data));
+	} else {
+		console.log('All done!');
+		client.end();
+	}
+}
+
+function createJob(priority, delay, ttr, payload) {
+	client.put(priority, delay, ttr, payload, function (err, job_id) {
+		doJob(getExchangeRate);
 	});
 }
 
-function retryJob(job_id, payload) {
+function retryJob(job_id, callback) {
+	fail_count++;
 	if (fail_count < 3) {
 		console.log('Job ' + job_id + ' failed');
-		fail_count++;
-		client.destroy(job_id, config.bs.priority, function (err) {
-			client.put(config.job.priority, config.job.retry_delay, config.job.ttr, JSON.stringify(payload), function (e, j_id) {
-				doJob();
-			});
-		});
+		client.destroy(job_id, config.bs.priority, callback);
 	} else {
+		buryJob(job_id);
 		client.bury(job_id, config.job.priority, function (err) {
 			if (err) {
 				console.log('Bury job ' + job_id + ' error:');
@@ -63,34 +65,45 @@ function retryJob(job_id, payload) {
 	}
 }
 
-function getExchangeRate(job_id, payload) {
-	let data = JSON.parse(payload);
-	request({
+function createRetryJob() {
+	createJob(config.job.priority, config.job.retry_delay, config.job.ttr, JSON.stringify(payload_data));
+}
+
+function buryJob(job_id) {
+	client.bury(job_id, config.job.priority, function (error) {
+		console.log('Failed 3 times!');
+		client.end();
+	});
+}
+
+function getExchangeRate(job_id) {
+	request.get({
 		url: 'http://www.xe.com/currencyconverter/convert/',
-		qs: {'Amount': 1, 'From': data.from, 'To': data.to}
+		qs: {'Amount': 1, 'From': payload_data.from, 'To': payload_data.to}
 	}).then(function (response) {
 		if (response.statusCode === 200) {
 			let elm = response.body.match(/<span class='uccResultAmount'>([\d.]*)<\/span>/g);
 			if (elm) {
 				let rate = Number.parseFloat(elm[0].match(/[\d.]+/g)[0]).toFixed(2);
 				saveExchangeRate({
-					'from': data.from,
-					'to': data.to,
+					'from': payload_data.from,
+					'to': payload_data.to,
 					'rate': rate
 				}).then(function (success) {
-					nextJob(job_id, data);
+					nextJob(job_id, checkSuccess);
 				}).catch(function (err) {
-					retryJob(job_id, data);
+					retryJob(job_id, createRetryJob);
 				});
 			} else {
-				retryJob(job_id, data);
+				retryJob(job_id, createRetryJob);
 			}
 		} else {
-			retryJob(job_id, data);
+			console.log(retryJob);
+			retryJob(job_id, createRetryJob);
 		}
 	}).catch(function (err) {
 		console.log(err);
-		retryJob(job_id, data);
+		retryJob(job_id, createRetryJob);
 	});
 }
 
@@ -114,7 +127,7 @@ client
 				if (err) {
 					console.log('Watch tube (' + config.bs.tube + ') error: ' + err);
 				} else {
-					doJob();
+					doJob(getExchangeRate);
 				}
 			});
 		});
@@ -126,3 +139,16 @@ client
 		console.log('client closed');
 	})
 	.connect();
+
+module.exports = {
+	request: request,
+	client: client,
+	doJob: doJob,
+	nextJob: nextJob,
+	createJob: createJob,
+	checkSuccess: checkSuccess,
+	retryJob: retryJob,
+	createRetryJob: createRetryJob,
+	getExchangeRate: getExchangeRate,
+	saveExchangeRate: saveExchangeRate
+}

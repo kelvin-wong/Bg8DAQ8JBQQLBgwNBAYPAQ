@@ -16,15 +16,21 @@
   },
   "devDependencies": {
     "babel-eslint": "^7.1.1",
+    "chai": "^3.5.0",
     "eslint": "^3.13.1",
     "eslint-config-aftership": "^3.2.1",
     "eslint-plugin-babel": "^3.3.0",
     "eslint-plugin-import": "^2.2.0",
     "eslint-plugin-jsx-a11y": "^2.2.3",
-    "eslint-plugin-react": "^6.9.0"
+    "eslint-plugin-react": "^6.9.0",
+    "mocha": "^3.2.0",
+    "sinon": "^1.17.7"
   },
   "scripts": {
-    "lint": "eslint --debug --ext .jsx,.js ."
+    "lint": "eslint --ext .jsx,.js .",
+    "test": "mocha test.js",
+    "seed": "node seed.js",
+    "worker": "node worker.js"
   },
   "author": "",
   "license": "ISC",
